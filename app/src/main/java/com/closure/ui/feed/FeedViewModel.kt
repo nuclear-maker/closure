@@ -1,4 +1,4 @@
-package com.skylerlin.closure.ui.feed
+package com.closure.ui.feed
 
 import android.app.Application
 import android.content.Context
@@ -14,9 +14,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.skylerlin.closure.data.MediaItem
-import com.skylerlin.closure.data.MediaRepository
-import com.skylerlin.closure.media.MotionPhotoDetector
+import com.closure.data.MediaItem
+import com.closure.data.MediaRepository
+import com.closure.media.MotionPhotoDetector
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext

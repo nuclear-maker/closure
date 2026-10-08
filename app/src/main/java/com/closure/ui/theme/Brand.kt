@@ -1,4 +1,4 @@
-package com.skylerlin.closure.ui.theme
+package com.closure.ui.theme
 
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color

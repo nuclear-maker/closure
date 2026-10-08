@@ -1,4 +1,4 @@
-package com.skylerlin.closure.ui.feed
+package com.closure.ui.feed
 
 import android.app.Activity
 import android.content.Context
@@ -110,8 +110,8 @@ import androidx.media3.common.Player
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.exoplayer.ExoPlayer
-import com.skylerlin.closure.data.MediaItem
-import com.skylerlin.closure.ui.theme.Brand
+import com.closure.data.MediaItem
+import com.closure.ui.theme.Brand
 import kotlinx.coroutines.launch
 
 private val Glass = Color(0x59262631)

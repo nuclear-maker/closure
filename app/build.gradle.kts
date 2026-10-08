@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.skylerlin.closure"
+    namespace = "com.closure"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.skylerlin.closure"
+        applicationId = "com.closure"
         minSdk = 30
         targetSdk = 36
         versionCode = 26

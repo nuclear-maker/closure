@@ -1,8 +1,8 @@
-package com.skylerlin.closure.media
+package com.closure.media
 
 import android.content.ContentResolver
 import android.content.Context
-import com.skylerlin.closure.data.MediaItem
+import com.closure.data.MediaItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream

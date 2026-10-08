@@ -1,4 +1,4 @@
-package com.skylerlin.closure
+package com.closure
 
 import android.Manifest
 import android.content.Context
@@ -58,9 +58,9 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.skylerlin.closure.ui.feed.FeedScreen
-import com.skylerlin.closure.ui.theme.Brand
-import com.skylerlin.closure.ui.theme.ClosureTheme
+import com.closure.ui.feed.FeedScreen
+import com.closure.ui.theme.Brand
+import com.closure.ui.theme.ClosureTheme
 
 private const val PREFS_NAME = "closure_prefs"
 private const val KEY_ONBOARDED = "onboarded"

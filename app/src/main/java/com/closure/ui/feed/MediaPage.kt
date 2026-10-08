@@ -1,4 +1,4 @@
-package com.skylerlin.closure.ui.feed
+package com.closure.ui.feed
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -81,8 +81,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
-import com.skylerlin.closure.R
-import com.skylerlin.closure.data.MediaItem
+import com.closure.R
+import com.closure.data.MediaItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest

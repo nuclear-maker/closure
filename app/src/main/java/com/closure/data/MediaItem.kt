@@ -1,4 +1,4 @@
-package com.skylerlin.closure.data
+package com.closure.data
 
 import android.content.ContentUris
 import android.net.Uri

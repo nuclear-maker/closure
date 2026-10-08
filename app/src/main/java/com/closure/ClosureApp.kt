@@ -1,4 +1,4 @@
-package com.skylerlin.closure
+package com.closure
 
 import android.app.Application
 import coil.ImageLoader

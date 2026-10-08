@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 整组上移 6：扇形构图重心偏下，不挪的话圆MASK里视觉偏沉 -->
+    <group android:translateY="-6">
+    <!-- 三张翻起的卡片：从后往前 -->
+    <group
+        android:rotation="-14"
+        android:pivotX="54"
+        android:pivotY="80">
+        <path
+            android:fillColor="#40FFFFFF"
+            android:pathData="M45,40 h18 a8,8 0 0 1 8,8 v28 a8,8 0 0 1 -8,8 h-18 a8,8 0 0 1 -8,-8 v-28 a8,8 0 0 1 8,-8 z" />
+    </group>
+    <group
+        android:pivotX="54"
+        android:pivotY="80">
+        <path
+            android:fillColor="#99FFFFFF"
+            android:pathData="M45,38 h18 a8,8 0 0 1 8,8 v28 a8,8 0 0 1 -8,8 h-18 a8,8 0 0 1 -8,-8 v-28 a8,8 0 0 1 8,-8 z" />
+    </group>
+    <group
+        android:rotation="14"
+        android:pivotX="54"
+        android:pivotY="80">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M45,36 h18 a8,8 0 0 1 8,8 v28 a8,8 0 0 1 -8,8 h-18 a8,8 0 0 1 -8,-8 v-28 a8,8 0 0 1 8,-8 z" />
+        <path
+            android:fillColor="#FF5E7E"
+            android:pathData="M50,54 h8 a4,4 0 0 1 4,4 v8 a4,4 0 0 1 -4,4 h-8 a4,4 0 0 1 -4,-4 v-8 a4,4 0 0 1 4,-4 z" />
+    </group>
+    </group>
+</vector>

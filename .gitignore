@@ -1,0 +1,26 @@
+# Gradle
+.gradle/
+build/
+app/build/
+
+# Kotlin / Android 构建缓存
+.kotlin/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# 本机配置（各自指自己的 SDK 路径）
+local.properties
+
+# IDE
+.idea/
+*.iml
+
+# 构建产物 / 本地调试物料
+*.apk
+*.jks
+*.keystore
+
+# OS
+.DS_Store
+Thumbs.db

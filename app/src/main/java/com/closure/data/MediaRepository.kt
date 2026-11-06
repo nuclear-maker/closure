@@ -42,6 +42,11 @@ class MediaRepository(context: Context) {
             add(MediaStore.MediaColumns.HEIGHT)
             add(MediaStore.MediaColumns.DISPLAY_NAME)
             add(MediaStore.MediaColumns.IS_FAVORITE)
+            // DATA 早就标了 deprecated，但要在「文件名」下面显示文件真正在哪个目录，
+            // 它是唯一直接给绝对路径的列；拿不到时用 RELATIVE_PATH 兜底
+            @Suppress("DEPRECATION")
+            add(MediaStore.MediaColumns.DATA)
+            add(MediaStore.MediaColumns.RELATIVE_PATH)
             if (isVideo) add(MediaStore.MediaColumns.DURATION)
         }.toTypedArray()
 
@@ -60,6 +65,8 @@ class MediaRepository(context: Context) {
             val iName = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
             // IS_FAVORITE 是老设备/个别 ROM 上可能缺失的列，取不到就当未收藏
             val iFav = c.getColumnIndex(MediaStore.MediaColumns.IS_FAVORITE)
+            val iData = c.getColumnIndex(MediaStore.MediaColumns.DATA)
+            val iRel = c.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
             val iDur = if (isVideo) c.getColumnIndexOrThrow(MediaStore.MediaColumns.DURATION) else -1
             while (c.moveToNext()) {
                 val taken = c.getLong(iTaken)
@@ -75,6 +82,8 @@ class MediaRepository(context: Context) {
                     height = c.getInt(iHeight),
                     name = c.getString(iName) ?: "",
                     isFavorite = iFav >= 0 && c.getInt(iFav) == 1,
+                    path = if (iData >= 0) c.getString(iData) ?: "" else "",
+                    relativePath = if (iRel >= 0) c.getString(iRel) ?: "" else "",
                 )
             }
         }

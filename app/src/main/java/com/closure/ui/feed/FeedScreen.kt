@@ -47,6 +47,7 @@ import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Bolt
@@ -59,6 +60,7 @@ import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.Style
+import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material.icons.rounded.VolumeOff
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
@@ -92,13 +94,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import coil.compose.AsyncImage
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -112,6 +117,7 @@ import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import com.closure.data.MediaItem
 import com.closure.ui.theme.Brand
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private val Glass = Color(0x59262631)
@@ -140,6 +146,7 @@ fun FeedScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    val clipboard = LocalClipboardManager.current
     // 最后一页固定为结束页
     val pagerState = rememberPagerState(pageCount = { vm.items.size + 1 })
 
@@ -158,17 +165,53 @@ fun FeedScreen() {
     // 照片缩放中/长图展开时锁定翻页手势
     var mediaLocked by remember { mutableStateOf(false) }
 
-    // 当前视频/实况的首帧是否已真正渲染进 PlayerView。
-    // 落页瞬间新 attach 的 PlayerView，其 TextureView 在首帧渲染出来之前是纯黑的，
-    // 直接摆上去会在静态垫底图上闪一帧黑（透明 shutter 只解决「上一视频残留」，管不了首帧前的黑）
-    // ——先藏住，等首帧回调后交叉淡化进入，顺带把 JPEG↔视频的色域/取景硬切也柔化
-    var videoFrameReady by remember { mutableStateOf(false) }
+    // 已经真正渲染出首帧的是「哪一条」媒体（保留到下一次换片为止）。
+    // 用 id 而不是布尔：翻页时新页的 PlayerView 会在同一帧里挂上共享播放器，
+    // 布尔值还留着上一段的 true，新页就会以不透明状态显示别的视频/黑帧。
+    var videoReadyId by remember { mutableStateOf<Long?>(null) }
+
+    // 视频横屏全屏：旋转 + 沉浸式隐藏系统栏，隐藏全部覆盖层
+    var fullscreen by remember { mutableStateOf(false) }
+    val activity = context as? Activity
+
+    /**
+     * 全屏方向以「解码器真正输出」的画面尺寸为准。
+     * 竖拍视频在相册里普遍存成 1920×1080 编码 + 旋转 90° 的元数据，MediaStore 的
+     * WIDTH/HEIGHT 给的常是编码尺寸——照它判断就把竖屏视频当横屏，全屏后手机横过来、
+     * 画面缩在屏幕中间一条。player.videoSize 已经带了旋转信息，才靠得住。
+     */
+    fun displaySizeOf(item: MediaItem?): Pair<Int, Int> {
+        val vs = player.videoSize
+        var w = vs.width
+        var h = vs.height
+        if (vs.unappliedRotationDegrees % 180 != 0) { val t = w; w = h; h = t }
+        if (w > 0 && h > 0) return w to h
+        return (item?.width ?: 0) to (item?.height ?: 0)   // 还没解码出画面时的兜底
+    }
+
+    fun applyVideoOrientation() {
+        val item = vm.items.getOrNull(pagerState.settledPage)
+        val (w, h) = displaySizeOf(item)
+        if (w <= 0 || h <= 0) return          // 尺寸未知：等 onVideoSizeChanged 再纠正
+        activity?.requestedOrientation = if (w > h) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT
+        }
+    }
 
     // 实况内嵌视频播放失败 → 回退静态原图，绝不黑屏
     DisposableEffect(player) {
         val listener = object : Player.Listener {
             override fun onRenderedFirstFrame() {
-                videoFrameReady = true
+                // 只认「播放器当前媒体」的首帧：拿到它到底是谁的 id，
+                // 别的页面就绝不会因为这一帧而误判成自己已经能显示
+                val renderedId = player.currentMediaItem?.mediaId?.toLongOrNull()
+                videoReadyId = renderedId
+            }
+            // 进全屏时尺寸可能还没解码出来，等它到了再把方向纠正过来
+            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                if (fullscreen) applyVideoOrientation()
             }
             override fun onPlayerError(error: PlaybackException) {
                 val item = vm.items.getOrNull(pagerState.settledPage)
@@ -184,23 +227,13 @@ fun FeedScreen() {
 
     var currentPageHasVideo by remember { mutableStateOf(false) }
 
-    // 视频横屏全屏：旋转 + 沉浸式隐藏系统栏，隐藏全部覆盖层
-    var fullscreen by remember { mutableStateOf(false) }
-    val activity = context as? Activity
     fun setFullscreen(on: Boolean) {
         if (fullscreen == on) return
         fullscreen = on
         val window = activity?.window
         val controller = window?.let { WindowCompat.getInsetsController(it, it.decorView) }
         if (on) {
-            // 竖屏（含正方形）视频全屏保持竖屏，只有真的宽>高才旋转
-            val item = vm.items.getOrNull(pagerState.settledPage)
-            val landscape = item == null || (item.width > 0 && item.width > item.height)
-            activity?.requestedOrientation = if (landscape) {
-                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-            } else {
-                ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT
-            }
+            applyVideoOrientation()   // 真实画面是竖是横，由解码结果说了算
             controller?.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             controller?.hide(WindowInsetsCompat.Type.systemBars())
@@ -230,18 +263,29 @@ fun FeedScreen() {
 
     // 当前页的播放决策：视频播原文件，实况照片播提取出的内嵌视频
     fun playCurrent(page: Int) {
-        videoFrameReady = false   // 换内容后旧首帧不再代表画面，等新首帧回调再亮出播放器
+        videoReadyId = null   // 换内容后「已就绪」作废，等新片自己的首帧回调
         val item = vm.items.getOrNull(page)
         val motionPath = item?.let { vm.motionVideos[it.id] }
         currentPageHasVideo = item?.isVideo == true || motionPath != null
         when {
             item == null -> { player.pause(); player.clearMediaItems() }
             item.isVideo -> {
-                player.setMediaItem(ExoMediaItem.fromUri(item.uri))
+                // mediaId 记成条目 id：首帧回调据此判断「这一帧是谁的」
+                player.setMediaItem(
+                    ExoMediaItem.Builder()
+                        .setUri(item.uri)
+                        .setMediaId(item.id.toString())
+                        .build()
+                )
                 player.prepare(); player.playWhenReady = true
             }
             motionPath != null -> {
-                player.setMediaItem(ExoMediaItem.fromUri(Uri.fromFile(File(motionPath))))
+                player.setMediaItem(
+                    ExoMediaItem.Builder()
+                        .setUri(Uri.fromFile(File(motionPath)))
+                        .setMediaId(item.id.toString())
+                        .build()
+                )
                 player.prepare(); player.playWhenReady = true
             }
             else -> { player.pause(); player.clearMediaItems() }
@@ -265,6 +309,10 @@ fun FeedScreen() {
     }
     // 换相册后回到顶部
     LaunchedEffect(vm.selectedBucket) {
+        pagerState.scrollToPage(0)
+    }
+    // 切换「仅视频」后列表整个换了一批，同样回到顶部从头刷
+    LaunchedEffect(vm.onlyVideos) {
         pagerState.scrollToPage(0)
     }
     // 实况视频提取完成时（页面可能还停在原地），补一次播放决策
@@ -363,13 +411,33 @@ fun FeedScreen() {
         }
     }
 
+    // 切模式时给一句确认：只在真的点过按钮之后提示，首次进入不弹
+    var lastVideoMode by remember { mutableStateOf(vm.onlyVideos) }
+    LaunchedEffect(vm.onlyVideos) {
+        if (vm.onlyVideos == lastVideoMode) return@LaunchedEffect
+        lastVideoMode = vm.onlyVideos
+        snackbarHostState.showSnackbar(
+            if (vm.onlyVideos) "仅视频 · 照片和实况都先收起来了" else "已恢复 · 照片和视频一起刷"
+        )
+    }
+
+    // 随机顺序开关的确认提示（同样只在点过按钮后弹）
+    var lastRandomOrder by remember { mutableStateOf(vm.randomOrder) }
+    LaunchedEffect(vm.randomOrder) {
+        if (vm.randomOrder == lastRandomOrder) return@LaunchedEffect
+        lastRandomOrder = vm.randomOrder
+        snackbarHostState.showSnackbar(
+            if (vm.randomOrder) "随机顺序 · 每次都是新的一批" else "按时间顺序 · 从最近一张开始"
+        )
+    }
+
     val safeDrawing = WindowInsets.safeDrawing
     val currentItem = vm.items.getOrNull(pagerState.currentPage)
     val currentIsLive = currentItem?.let { vm.liveIds.containsKey(it.id) } == true
 
-    // 顶栏文件名：点击展开完整文件名，换页后收回
-    var nameExpanded by remember { mutableStateOf(false) }
-    LaunchedEffect(currentItem?.id) { nameExpanded = false }
+    // 顶栏文件名：点一下弹窗看完整文件名与路径，换页后自动收起
+    var fileInfoItem by remember { mutableStateOf<MediaItem?>(null) }
+    LaunchedEffect(currentItem?.id) { fileInfoItem = null }
 
     Box(Modifier.fillMaxSize().background(Brand.Bg)) {
         if (!vm.loaded) {
@@ -386,20 +454,32 @@ fun FeedScreen() {
                 val item = vm.items.getOrNull(page)
                 if (item == null) {
                     EndPage(
-                        hasContent = vm.items.isNotEmpty(),
+                        // 仅视频模式下一张都没有时，也给一个「取消仅视频」的出口
+                        hasContent = vm.items.isNotEmpty() || vm.onlyVideos,
                         title = when {
+                            vm.onlyVideos && vm.items.isEmpty() -> "这一册没有视频"
                             vm.onlyFavorites && vm.items.isEmpty() -> "还没有收藏"
                             vm.onlyFavorites -> "收藏的都翻完了"
                             vm.items.isEmpty() -> "这里已经清清爽爽"
                             else -> "这一册，翻完了"
                         },
                         subtitle = when {
+                            vm.onlyVideos && vm.items.isEmpty() -> "取消「仅视频」，照片和实况就回来了"
                             vm.onlyFavorites && vm.items.isEmpty() -> "刷到想留的，点一下心形"
                             vm.onlyFavorites -> "已收藏 ${vm.favoritesCount} 张 · 系统相册里也能看到"
                             vm.deletedCount > 0 -> "本轮翻篇 ${vm.deletedCount} 张 · 后悔药在系统相册回收站（30 天）"
                             else -> "没有需要翻篇的内容，都是好回忆"
                         },
-                        onRestart = { vm.reshuffle() },
+                        restartLabel = when {
+                            vm.onlyVideos && vm.items.isEmpty() -> "取消「仅视频」"
+                            // 顺序模式下重刷不会变顺序，不要说「换一批」误导用户
+                            !vm.randomOrder -> "从头再刷一遍"
+                            else -> "换一批，再刷一遍"
+                        },
+                        onRestart = {
+                            if (vm.onlyVideos && vm.items.isEmpty()) vm.toggleVideoMode()
+                            else vm.reshuffle()
+                        },
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
@@ -414,7 +494,7 @@ fun FeedScreen() {
                         onLockChange = { mediaLocked = it },
                         fullscreen = fullscreen,
                         onEnterFullscreen = { setFullscreen(true) },
-                        videoFrameReady = videoFrameReady,
+                        videoFrameReady = videoReadyId == item.id,
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -452,7 +532,7 @@ fun FeedScreen() {
                 )
             }
 
-            // 顶部：文件名（点击展开）+ 静音 + 换一批 + 相册筛选（放大/展开/沉浸时隐藏）
+            // 顶部：文件名（点击看详情）+ 静音 + 随机顺序 + 仅视频 + 相册筛选（放大/展开/沉浸时隐藏）
             AnimatedVisibility(
                 visible = !mediaLocked && !fullscreen && !immersive,
                 modifier = Modifier.align(Alignment.TopCenter),
@@ -463,7 +543,9 @@ fun FeedScreen() {
                     .fillMaxWidth()
                     .windowInsetsPadding(safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
                     .padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
+                // 顶部对齐：右侧 Column 在按钮下面还挂着一颗「仅视频」胶囊，
+                // 用 CenterVertically 会把文件名按整个 Column 居中，比按钮低半截
+                verticalAlignment = Alignment.Top
             ) {
                 currentItem?.let { item ->
                     val liveSuffix = if (vm.liveIds.containsKey(item.id)) " · 实况" else ""
@@ -471,8 +553,7 @@ fun FeedScreen() {
                     Box(Modifier.weight(1f).padding(end = 12.dp)) {
                         FileNamePill(
                             text = item.fileName() + liveSuffix,
-                            expanded = nameExpanded,
-                            onToggle = { nameExpanded = !nameExpanded }
+                            onClick = { fileInfoItem = item }
                         )
                     }
                 }
@@ -486,9 +567,26 @@ fun FeedScreen() {
                             )
                         }
                         Spacer(Modifier.width(10.dp))
-                        GlassCircle(onClick = { vm.reshuffle() }) {
+                        // 随机顺序开关：亮起 = 打乱刷，熄灭 = 按拍摄时间从近到远
+                        GlassCircle(
+                            onClick = { vm.toggleRandomOrder() },
+                            highlight = vm.randomOrder
+                        ) {
                             Icon(
-                                Icons.Rounded.Shuffle, contentDescription = "换一批",
+                                Icons.Rounded.Shuffle,
+                                contentDescription = if (vm.randomOrder) "关闭随机顺序" else "开启随机顺序",
+                                tint = Color.White, modifier = Modifier.padding(10.dp).size(20.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        // 仅视频模式：亮起来就只刷视频，再点一下回到照片 + 视频
+                        GlassCircle(
+                            onClick = { vm.toggleVideoMode() },
+                            highlight = vm.onlyVideos
+                        ) {
+                            Icon(
+                                Icons.Rounded.Videocam,
+                                contentDescription = if (vm.onlyVideos) "取消仅视频" else "只看视频",
                                 tint = Color.White, modifier = Modifier.padding(10.dp).size(20.dp)
                             )
                         }
@@ -501,9 +599,34 @@ fun FeedScreen() {
                                 favoritesCount = vm.favoritesCount,
                                 selected = vm.selectedBucket,
                                 onlyFavorites = vm.onlyFavorites,
+                                onlyVideos = vm.onlyVideos,
                                 onSelect = { vm.selectBucket(it) },
                                 onSelectFavorites = { vm.selectFavorites() }
                             )
+                        }
+                    }
+                    // 模式胶囊：告诉用户「现在是仅视频」，点一下就地取消
+                    AnimatedVisibility(visible = vm.onlyVideos, enter = fadeIn(), exit = fadeOut()) {
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = Color(0xCC141419),
+                            modifier = Modifier
+                                .padding(top = 10.dp)
+                                .border(1.dp, Color(0x66FF6B6B), RoundedCornerShape(50))
+                                .clip(RoundedCornerShape(50))
+                                .clickable { vm.toggleVideoMode() }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Rounded.Videocam, contentDescription = null,
+                                    tint = Brand.Coral, modifier = Modifier.size(12.dp)
+                                )
+                                Spacer(Modifier.width(5.dp))
+                                Text("仅视频 · 点一下取消", color = Color.White, fontSize = 11.sp)
+                            }
                         }
                     }
                     AnimatedVisibility(visible = currentIsLive, enter = fadeIn(), exit = fadeOut()) {
@@ -621,6 +744,7 @@ fun FeedScreen() {
                         .size(40.dp)
                         .background(Color(0xF2FFFFFF), CircleShape)
                         .border(1.dp, Color(0x1F000000), CircleShape)
+                        .clip(CircleShape)
                         .clickable { showConfirmSheet = true },
                     contentAlignment = Alignment.Center
                 ) {
@@ -737,6 +861,7 @@ fun FeedScreen() {
                                             .size(20.dp)
                                             .background(Color(0xCC141419), CircleShape)
                                             .border(1.dp, GlassBorder, CircleShape)
+                                            .clip(CircleShape)
                                             .clickable {
                                                 vm.unmark(m.id)
                                                 if (vm.marked.isEmpty()) showConfirmSheet = false
@@ -799,6 +924,17 @@ fun FeedScreen() {
                     }
                 }
             }
+
+            // 文件名 / 路径详情弹窗
+            fileInfoItem?.let { info ->
+                FileInfoDialog(
+                    item = info,
+                    onDismiss = { fileInfoItem = null },
+                    onCopy = { text ->
+                        clipboard.setText(AnnotatedString(text))
+                    }
+                )
+            }
         }
     }
 }
@@ -836,13 +972,20 @@ internal fun GlassCircle(
     size: androidx.compose.ui.unit.Dp = 40.dp,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    /** 高亮态（开关打开）：换成品牌渐变底色，一眼能看出当前处于该模式 */
+    highlight: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     Box(
         modifier = modifier
             .size(size)
-            .background(Glass, CircleShape)
-            .border(1.dp, GlassBorder, CircleShape)
+            .then(
+                if (highlight) Modifier.background(Brand.buttonGradient, CircleShape)
+                else Modifier.background(Glass, CircleShape)
+            )
+            .border(1.dp, if (highlight) Color(0x66FFFFFF) else GlassBorder, CircleShape)
+            // 先裁剪再挂点击：否则按下的水波纹/阴影是方的，会从圆钮四角漏出来
+            .clip(CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
@@ -850,32 +993,117 @@ internal fun GlassCircle(
     }
 }
 
-/** 顶栏文件名：单行显示（放不下就点开看完整），高度与右侧圆形按钮一致，左右齐平 */
+/** 顶栏文件名：单行显示，点一下弹窗看完整文件名与路径 */
 @Composable
 private fun FileNamePill(
     text: String,
-    expanded: Boolean,
-    onToggle: () -> Unit,
+    onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(
         shape = RoundedCornerShape(50),
         color = Color(0x66000000),
         border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder),
+        // 固定 40dp：和右侧圆形按钮同高，顶部对齐后自然在同一水平面
         modifier = modifier
-            .heightIn(min = 40.dp)
-            .clickable(onClick = onToggle)
+            .height(40.dp)
+            .clip(RoundedCornerShape(50))   // 先裁剪，按下的方角高亮不会漏出胶囊
+            .clickable(onClick = onClick)
     ) {
-        Box(contentAlignment = Alignment.Center) {
+        Box(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
             Text(
                 text = text,
                 color = Color(0xF2FFFFFF),
                 fontSize = 12.sp,
-                lineHeight = 15.sp,
-                maxLines = if (expanded) 6 else 1,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
             )
+        }
+    }
+}
+
+/** 文件名 / 路径详情弹窗 */
+@Composable
+private fun FileInfoDialog(
+    item: MediaItem,
+    onDismiss: () -> Unit,
+    onCopy: (String) -> Unit,
+) {
+    // 复制反馈放在按钮上：snackbar 在弹窗后面，用户根本看不见
+    var copied by remember(item.id) { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1600)
+            copied = false
+        }
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = Color(0xFF1C1D24),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, GlassBorder, RoundedCornerShape(24.dp))
+        ) {
+            Column(Modifier.padding(22.dp)) {
+                Text("文件名", color = Color(0xFF9AA0A6), fontSize = 11.sp)
+                Spacer(Modifier.height(5.dp))
+                SelectionContainer {
+                    Text(
+                        item.fileName(),
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        lineHeight = 22.sp
+                    )
+                }
+                Spacer(Modifier.height(16.dp))
+                Text("所在位置", color = Color(0xFF9AA0A6), fontSize = 11.sp)
+                Spacer(Modifier.height(5.dp))
+                SelectionContainer {
+                    Text(
+                        item.fullPath(),
+                        color = Color(0xFFB9BEC7),
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp
+                    )
+                }
+                Spacer(Modifier.height(22.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(46.dp)
+                            .background(Brand.buttonGradient, RoundedCornerShape(23.dp))
+                            .clip(RoundedCornerShape(23.dp))
+                            .clickable {
+                                onCopy(item.fullPath())
+                                copied = true
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            if (copied) "已复制" else "复制路径",
+                            color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(46.dp)
+                            .background(Color(0x1AFFFFFF), RoundedCornerShape(23.dp))
+                            .clip(RoundedCornerShape(23.dp))
+                            .clickable(onClick = onDismiss),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("关闭", color = Color(0xFFE6E6E6), fontSize = 14.sp)
+                    }
+                }
+            }
         }
     }
 }
@@ -888,6 +1116,7 @@ private fun BucketMenu(
     favoritesCount: Int,
     selected: String?,
     onlyFavorites: Boolean,
+    onlyVideos: Boolean,
     onSelect: (String?) -> Unit,
     onSelectFavorites: () -> Unit,
 ) {
@@ -905,7 +1134,7 @@ private fun BucketMenu(
         )
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             DropdownMenuItem(
-                text = { Text("全部照片 · $totalCount") },
+                text = { Text(if (onlyVideos) "全部视频 · $totalCount" else "全部照片 · $totalCount") },
                 leadingIcon = {
                     if (selected == null && !onlyFavorites) Icon(Icons.Rounded.Check, null) else null
                 },
@@ -922,7 +1151,8 @@ private fun BucketMenu(
                 },
                 onClick = { onSelectFavorites(); expanded = false }
             )
-            buckets.forEach { bucket ->
+            // 计数为 0 的相册（仅视频模式下没有视频的相册、删空了的相册）不进菜单
+            buckets.filter { (counts[it] ?: 0) > 0 }.forEach { bucket ->
                 DropdownMenuItem(
                     text = { Text("$bucket · ${counts[bucket] ?: 0}") },
                     leadingIcon = {
@@ -942,6 +1172,7 @@ private fun EndPage(
     subtitle: String,
     onRestart: () -> Unit,
     modifier: Modifier = Modifier,
+    restartLabel: String = "换一批，再刷一遍",
 ) {
     Column(
         modifier = modifier.padding(32.dp),
@@ -962,7 +1193,7 @@ private fun EndPage(
             val pressed by interaction.collectIsPressedAsState()
             val scale by animateFloatAsState(if (pressed) 0.94f else 1f, label = "restartScale")
             Text(
-                "换一批，再刷一遍",
+                restartLabel,
                 color = Color.White,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.SemiBold,

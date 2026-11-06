@@ -58,6 +58,13 @@ class FeedViewModel(application: Application) : AndroidViewModel(application) {
     var onlyFavorites by mutableStateOf(false)
         private set
 
+    /**
+     * 仅视频模式：刷流里只留视频；取消后恢复成「照片 + 视频」混刷。
+     * 与相册 / 收藏筛选叠加生效（相册筛选里只看视频）。
+     */
+    var onlyVideos by mutableStateOf(false)
+        private set
+
     /** 收藏总数（筛选菜单里显示） */
     var favoritesCount by mutableIntStateOf(0)
         private set
@@ -74,6 +81,14 @@ class FeedViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 视频与实况的静音开关（持久化，下次启动记住偏好） */
     var muted by mutableStateOf(prefs.getBoolean(KEY_MUTED, false))
+        private set
+
+    /**
+     * 刷流顺序：true = 随机（每次启动都是它），false = 按拍摄时间从近到远。
+     * 不落盘：这是个「本次刷流」的开关，下次打开 App 一律从随机开始——
+     * 免得哪天顺手关掉，过几天再打开发现相册变成了按时间排，还以为默认变了。
+     */
+    var randomOrder by mutableStateOf(true)
         private set
 
     /** 极速模式：已授予「所有文件访问」，确认翻篇直接删除、不弹系统窗 */
@@ -105,20 +120,27 @@ class FeedViewModel(application: Application) : AndroidViewModel(application) {
         loading = true
         viewModelScope.launch(Dispatchers.IO) {
             val library = repository.loadLibrary()
-            master = library.items.shuffled()
-            bucketCounts = library.bucketCounts
+            // 仓库给的是按时间倒序；随机模式才打乱
+            master = if (randomOrder) library.items.shuffled() else library.items
+            // 相册列表只在这里定一次：顺序稳定，切模式/换一批时菜单不会跳来跳去
             buckets = library.bucketCounts.keys.toList()
-            totalCount = library.items.size
-            favoritesCount = master.count { it.isFavorite }
             applyFilter()
             loaded = true
             loading = false
         }
     }
 
-    /** 换一批：重新洗牌 */
+    /** 随机顺序开关：开 = 打乱，关 = 按时间从近到远（只影响本次，重开 App 回到随机） */
+    fun toggleRandomOrder() {
+        randomOrder = !randomOrder
+        master = if (randomOrder) master.shuffled() else master.sortedByDescending { it.dateMs }
+        applyFilter()
+        shuffleTick++   // 顺序整个变了，回到顶部
+    }
+
+    /** 换一批：随机模式下重新洗牌；顺序模式下什么都没变，只回到顶部 */
     fun reshuffle() {
-        master = master.shuffled()
+        if (randomOrder) master = master.shuffled()
         applyFilter()
         shuffleTick++
     }
@@ -143,14 +165,38 @@ class FeedViewModel(application: Application) : AndroidViewModel(application) {
         applyFilter()
     }
 
+    /** 仅视频模式开关：开 → 只刷视频；关 → 照片 + 视频回到混刷 */
+    fun toggleVideoMode() {
+        onlyVideos = !onlyVideos
+        // 当前相册里一张视频都没有时，切到仅视频会是空刷流 —— 退回全部相册
+        if (onlyVideos && selectedBucket != null &&
+            master.none { it.isVideo && it.bucket == selectedBucket }
+        ) {
+            selectedBucket = null
+        }
+        applyFilter()
+    }
+
+    /** 当前模式下可供刷的池子：仅视频模式只留视频，其余照旧 */
+    private fun pool(): List<MediaItem> = if (onlyVideos) master.filter { it.isVideo } else master
+
     private fun applyFilter() {
+        val pool = pool()
         val filtered = when {
-            onlyFavorites -> master.filter { it.isFavorite }
-            selectedBucket != null -> master.filter { it.bucket == selectedBucket }
-            else -> master
+            onlyFavorites -> pool.filter { it.isFavorite }
+            selectedBucket != null -> pool.filter { it.bucket == selectedBucket }
+            else -> pool
         }
         items.clear()
         items.addAll(filtered)
+        refreshCounts(pool)
+    }
+
+    /** 计数跟着模式走：仅视频时菜单里的数字就是实际会刷到的条数 */
+    private fun refreshCounts(pool: List<MediaItem>) {
+        totalCount = pool.size
+        favoritesCount = pool.count { it.isFavorite }
+        bucketCounts = pool.groupingBy { it.bucket }.eachCount()
     }
 
     /**
@@ -182,7 +228,7 @@ class FeedViewModel(application: Application) : AndroidViewModel(application) {
         }
         val itemIdx = items.indexOfFirst { it.id == id }
         if (itemIdx >= 0) items[itemIdx] = items[itemIdx].copy(isFavorite = favorite)
-        favoritesCount = master.count { it.isFavorite }
+        favoritesCount = pool().count { it.isFavorite }
     }
 
     fun markForDelete(item: MediaItem) {

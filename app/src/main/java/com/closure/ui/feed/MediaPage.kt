@@ -116,12 +116,24 @@ fun MediaPage(
     val playNow = isActive && (item.isVideo || motionPlayable)
     val underlayInteractive = !item.isVideo && !(isActive && motionPlayable)
 
-    // PlayerView 在首帧渲染前是黑 TextureView：藏住透出垫底静态图，首帧回调后交叉淡入
-    val surfaceAlpha by animateFloatAsState(
-        targetValue = if (videoFrameReady) 1f else 0f,
-        animationSpec = tween(durationMillis = 180),
-        label = "videoSurface"
-    )
+    // 首帧就绪前必须把播放器藏住（TextureView 没有可画帧时是纯黑），就绪后再淡入。
+    // 两个坑，都是实测出来的：
+    //   1) 不能淡出。换页时共享播放器已经换成新内容，淡出会把上一段的残影/黑帧
+    //      淡在新页面上——只有「亮出来」走动画，收回去一律瞬时；
+    //   2) 不能用 Modifier.graphicsLayer 做这个 alpha。TextureView 被包进
+    //      Compose 的离屏层后会间歇性画黑（同一段纯色视频，稳态黑帧率 49% → 0%），
+    //      所以透明度必须走 View 自己的 alpha。
+    var playerView by remember { mutableStateOf<PlayerView?>(null) }
+    LaunchedEffect(item.id, videoFrameReady, playerView) {
+        val view = playerView ?: return@LaunchedEffect
+        if (videoFrameReady) {
+            view.animate().cancel()
+            view.animate().alpha(1f).setDuration(180).start()
+        } else {
+            view.animate().cancel()
+            view.alpha = 0f
+        }
+    }
 
     // 分层渲染：底层是静态图（视频用 VideoFrameDecoder 取首帧、实况用原图 JPEG），
     // 播放器 shutter 已设透明，首帧渲染完成前透出底层图——消除「静态图→黑→视频」的闪烁。
@@ -145,12 +157,13 @@ fun MediaPage(
         }
         if (playNow) {
             AndroidView(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer { alpha = surfaceAlpha },
+                modifier = Modifier.fillMaxSize(),
                 factory = { context ->
-                    LayoutInflater.from(context)
-                        .inflate(R.layout.view_video_player, null, false) as PlayerView
+                    (LayoutInflater.from(context)
+                        .inflate(R.layout.view_video_player, null, false) as PlayerView).apply {
+                        alpha = 0f   // 从全透明开始，等本页首帧回调再淡入
+                        playerView = this
+                    }
                 },
                 update = { view -> if (view.player !== player) view.player = player },
                 // 离开组合时显式摘掉 player：避免旧 surface 的销毁事件与

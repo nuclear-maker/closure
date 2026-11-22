@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.BitmapRegionDecoder
 import android.graphics.Rect
+import android.os.SystemClock
 import android.view.LayoutInflater
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
@@ -96,6 +97,13 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 private const val MAX_ZOOM = 5f
+
+/** 松手后显示位置钉到 seek 目标上，直到播放器追上：容差与超时兜底 */
+private const val SEEK_SETTLE_TOLERANCE_MS = 250L
+private const val SEEK_PIN_TIMEOUT_MS = 1500L
+
+/** 一次待落地的定位：目标位置 + 下手时间（用于超时兜底） */
+private data class SeekPin(val ms: Long, val at: Long)
 
 @Composable
 fun MediaPage(
@@ -673,21 +681,37 @@ private fun VideoSeekBar(player: ExoPlayer, item: MediaItem, modifier: Modifier 
     var dragging by remember(item.id) { mutableStateOf(false) }
     var dragFraction by remember(item.id) { mutableFloatStateOf(0f) }
     var trackWidth by remember { mutableIntStateOf(0) }
+    // 松手/点击后先钉住目标位置。轮询在拖动期间是停的，positionMs 还停在拖动前的
+    // 旧值；seeking 也不是当帧就生效，直接回读会画出一帧旧位置——从后往前拖时
+    // 最明显：进度条先闪回原来那一段，再跳到手指松开的地方。
+    var pinnedSeek by remember(item.id) { mutableStateOf<SeekPin?>(null) }
     val durationNow by rememberUpdatedState(durationMs)
 
     // 进度轮询：拖动时不读播放器位置，否则手指会被回读值拽回去
     LaunchedEffect(item.id, dragging) {
         while (!dragging) {
             player.duration.takeIf { it > 0L }?.let { durationMs = it }
-            positionMs = player.currentPosition.coerceAtLeast(0L)
+            val live = player.currentPosition.coerceAtLeast(0L)
+            val pin = pinnedSeek
+            if (pin == null) {
+                positionMs = live
+            } else if (abs(live - pin.ms) <= SEEK_SETTLE_TOLERANCE_MS ||
+                SystemClock.elapsedRealtime() - pin.at > SEEK_PIN_TIMEOUT_MS
+            ) {
+                pinnedSeek = null            // seek 已落地（或等太久），交还给实时位置
+                positionMs = live
+            } else {
+                positionMs = pin.ms          // 还没落地，继续显示目标位置
+            }
             delay(120)
         }
     }
 
+    val displayMs = pinnedSeek?.ms ?: positionMs
     val fraction = when {
         durationMs <= 0L -> 0f
         dragging -> dragFraction
-        else -> (positionMs.toFloat() / durationMs).coerceIn(0f, 1f)
+        else -> (displayMs.toFloat() / durationMs).coerceIn(0f, 1f)
     }
     val thumbScale by animateFloatAsState(if (dragging) 1.5f else 1f, label = "seekThumb")
     val density = LocalDensity.current
@@ -698,7 +722,7 @@ private fun VideoSeekBar(player: ExoPlayer, item: MediaItem, modifier: Modifier 
         AnimatedVisibility(visible = dragging, enter = fadeIn(), exit = fadeOut()) {
             Box(Modifier.fillMaxWidth().padding(bottom = 8.dp), contentAlignment = Alignment.Center) {
                 Text(
-                    "${clock(if (dragging) (dragFraction * durationMs).toLong() else positionMs)} / ${clock(durationMs)}",
+                    "${clock(if (dragging) (dragFraction * durationMs).toLong() else displayMs)} / ${clock(durationMs)}",
                     color = Color.White,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -743,7 +767,10 @@ private fun VideoSeekBar(player: ExoPlayer, item: MediaItem, modifier: Modifier 
                         }
                         // 松手定位：拖动取最后位置，点按取按下位置
                         if (!cancelled && durationNow > 0L) {
-                            player.seekTo((fraction * durationNow).toLong())
+                            val target = (fraction * durationNow).toLong()
+                            // 先钉住目标再松开 dragging：否则这一帧会先按旧 positionMs 画
+                            pinnedSeek = SeekPin(target, SystemClock.elapsedRealtime())
+                            player.seekTo(target)
                         }
                         if (isDrag) {
                             dragging = false
